@@ -4,6 +4,8 @@ import pwd
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
+import re
 
 HOME = Path.home()
 ZSHRC_PATH = HOME / ".zshrc"
@@ -103,9 +105,14 @@ def main() -> int:
         return 1
     
     print("OMZ setup completed successfully.")
+
+    if not manage_plugins():
+        print("Plugin setup encountered an error")
+        return 1
+    
     return 0
 
-# starting here we check for omz 
+# starting here we check for omz, curl, and git 
 def oh_my_zsh_installed() -> bool:
     return OMZ_SCRIPT_PATH.is_file()
 
@@ -192,7 +199,159 @@ def ensure_oh_my_zsh() -> bool:
     print(f"OMZ installed at {OMZ_PATH}.")
     return True
 
+#starting here we check for plugins, we have a funciton to clone them, then we append them to zshrc
 
+def get_plugin_name(repository_url: str) -> str | None:
+    parsed_url = urlparse(repository_url)
+    if parsed_url.scheme != "https":
+        return None
+    if parsed_url.hostname not in ("github.com", "gitlab.com"):
+        return None
+    path_parts = parsed_url.path.strip("/").split("/")
+
+    if len(path_parts) != 2:
+        return None
+    plugin_name = path_parts[1].replace(".git", "")
+
+    if not plugin_name:
+        return None
+    return plugin_name
+
+def clone_plugin(repository_url: str, plugin_name: str) -> bool:
+    plugin_path = CUSTOM_PLUGIN_PATH / plugin_name
+
+    if plugin_path.exists():
+        print(f"Plugin {plugin_name} already exists at {plugin_path}.")
+        return True
+    print(f"Installing {plugin_name} plugin from {repository_url}")
+
+    if not run_command(["git", "clone", "--depth=1", repository_url, str(plugin_path)]):
+        print(f"Failed to clone {plugin_name} plugin.")
+        return False
+
+    if not plugin_path.is_dir():
+        print("Git completed but plugin directory couldn't be found")
+        return False
+
+    print(f"Plugin {plugin_name} installed at {plugin_path}.")
+    return True
+
+PLUGIN_BLOCK_PATTERN = re.compile(
+    r"^[ \t]*plugins=\((.*?)\)",
+    re.MULTILINE | re.DOTALL,
+)
+
+def get_enabled_plugins() -> list[str] | None:
+    zshrc_text = ZSHRC_PATH.read_text()
+
+    match = PLUGIN_BLOCK_PATTERN.search(zshrc_text)
+
+    if match is None:
+        return None
+
+    plugin_block = match.group(1)
+
+    uncommented_lines = []
+
+    for line in plugin_block.splitlines():
+        line_without_comment = line.split("#", 1)[0]
+        uncommented_lines.append(line_without_comment)
+    uncommented_block = "\n".join(uncommented_lines)
+
+    return uncommented_block.split()
+
+
+def backup_zshrc() -> bool:
+    backup_path = HOME / ".zshrc.backup"
+
+    try:
+        if not backup_path.exists():
+            shutil.copy2(ZSHRC_PATH, backup_path)
+            print(f"Backup of .zshrc created at {backup_path}.")
+        else:
+            print(f"Backup of .zshrc already exists at {backup_path}.")
+        return True
+
+    except OSError as error:
+        print(f"Failed to create backup of .zshrc: {error}")
+        return False
+
+def enable_plugin(plugin_name: str) -> bool:
+    enabled_plugins = get_enabled_plugins()
+
+    if enabled_plugins is None:
+        print("Could not find plugins block in .zshrc.")
+        return False
+
+    if plugin_name in enabled_plugins:
+        print(f"Plugin {plugin_name} is already enabled in .zshrc.")
+        return True
+
+    try:
+        zshrc_text = ZSHRC_PATH.read_text()
+    except OSError as error:
+        print(f"Failed to read .zshrc: {error}")
+        return False
+
+    match = PLUGIN_BLOCK_PATTERN.search(zshrc_text)
+
+    if match is None:
+        print("Could not find plugins block in .zshrc.")
+        return False
+
+    plugin_block = match.group(1)
+
+    if "\n" in plugin_block:
+        new_plugin_block = plugin_block + f"\n  {plugin_name}"
+    else:
+        existing_plugins = plugin_block.strip()
+        new_plugin_block = f"{existing_plugins} {plugin_name}"
+
+    updated_zshrc = (
+        zshrc_text[: match.start(1)]
+        + new_plugin_block
+        + zshrc_text[match.end(1) :]
+    )
+
+    if not backup_zshrc():
+        return False
+
+    try:
+        ZSHRC_PATH.write_text(updated_zshrc)
+    except OSError as error:
+        print(f"Failed to write updated .zshrc: {error}")
+        return False
+    if plugin_name not in (get_enabled_plugins() or []):
+        print(f"Failed to enable plugin {plugin_name} in .zshrc.")
+        return False
+
+    print(f"Plugin {plugin_name} enabled successfully in .zshrc.")
+    return True
+
+def manage_plugins() -> bool:
+    CUSTOM_PLUGIN_PATH.mkdir(parents=True, exist_ok=True)
+
+    while ask_yes_no("Would you like to install a plugin?"):
+        repository_url = input("Enter the plugin repository URL:").strip()
+
+        plugin_name = get_plugin_name(repository_url)
+
+        if plugin_name is None:
+            print("Invalid repository URL. Please provide a valid GitHub or GitLab repository URL.")
+            continue
+
+        print(f"Detected plugin name: {plugin_name}")
+
+        if not clone_plugin(repository_url, plugin_name):
+            print(f"Failed to install plugin {plugin_name}.")
+            continue
+
+        if not enable_plugin(plugin_name):
+            print(f"{plugin_name} was installed but could not be enabled in .zshrc.")
+            continue
+
+        print(f"Plugin {plugin_name} installed and enabled successfully.")
+        return True
 
 if __name__ == "__main__":
     try:
