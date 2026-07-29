@@ -46,6 +46,40 @@ def get_default_shell() -> str:
     user_record = pwd.getpwuid(os.getuid())
     return user_record.pw_shell
 
+def ensure_dependencies(dependencies: dict[str, str]) -> bool:
+    missing_dependencies = {
+        command:package for command, package in dependencies.items()
+        if shutil.which(command) is None
+    }
+
+    if not missing_dependencies:
+        return True
+
+    missing_packages = sorted(set(missing_dependencies.values()))
+    print(f"You are missing: {', '.join(missing_packages)}")    
+
+    if not ask_yes_no("Do you want to install the missing dependencies?"):
+        print("Dependency installation skipped.")
+        return False
+
+    if not run_command (["sudo", "apt-get", "update"]):
+        return False
+
+    if not run_command(["sudo", "apt-get", "install", "-y", *missing_packages]):
+        return False
+
+    still_missing = {
+        command:package for command, package in missing_dependencies.items()
+        if shutil.which(command) is None
+    }
+
+    if still_missing:
+        print(f"Failed to install: {', '.join(set(still_missing.values()))}")
+        return False
+
+    print(f"Successfully installed: {', '.join(missing_packages)}")
+    return True
+
 # this is the main function to make sure zsh is installed/default
 
 def ensure_zsh() -> bool:
@@ -110,6 +144,7 @@ def main() -> int:
         print("Plugin setup encountered an error")
         return 1
     
+    print("\nTerminal setup completed successfully.")
     return 0
 
 # starting here we check for omz, curl, and git 
@@ -119,9 +154,6 @@ def oh_my_zsh_installed() -> bool:
 def ensure_oh_my_zsh() -> bool:
     installer_path = Path("/tmp/oh-my-zsh-install.sh")
     installer_url = "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh"
-    curl_path = shutil.which("curl")
-    git_path = shutil.which("git")
-
 
     if oh_my_zsh_installed():
         print(f"OMZ detected at {OMZ_PATH}.")
@@ -144,43 +176,17 @@ def ensure_oh_my_zsh() -> bool:
         print("OMZ installation skipped.")
         return False
 
+    if not ensure_dependencies({
+        "curl": "curl",
+        "git": "git",
+    }):
+        return False
 
-    if curl_path is None:
-        print("Curl is required to install OMZ")
-        if not ask_yes_no("Do you want to install Curl?"):
-            print("Curl installation skipped.")
-            return False
-        if not run_command(["sudo", "apt-get", "update"]):
-            return False
-        if not run_command(["sudo", "apt-get", "install", "-y", "curl"]):
-            return False
-        
-        curl_path = shutil.which("curl")
-
-        if curl_path is None:
-            print("Curl was installed, but could not be detected.")
-            return False
-
-    if git_path is None:
-        print("Git is required to install OMZ")
-
-        if not ask_yes_no("Do you want to install Git?"):
-            print("Git installation skipped.")
-            return False
-        if not run_command(["sudo", "apt-get", "update"]):
-            return False
-        if not run_command(["sudo", "apt-get", "install", "-y", "git"]):
-            return False
-        git_path = shutil.which("git")
-
-        if git_path is None:
-            print("Git was installed, but could not be detected.")
-            return False
 
     installer_path.unlink(missing_ok=True)
 
     try:
-        if not run_command([curl_path, "-fsSL", installer_url, "-o", str(installer_path)]):
+        if not run_command(["curl", "-fsSL", installer_url, "-o", str(installer_path)]):
             return False
 
         if not run_command(["sh", str(installer_path), "--unattended"]):
@@ -211,7 +217,7 @@ def get_plugin_name(repository_url: str) -> str | None:
 
     if len(path_parts) != 2:
         return None
-    plugin_name = path_parts[1].replace(".git", "")
+    plugin_name = path_parts[1].removesuffix(".git")
 
     if not plugin_name:
         return None
@@ -328,30 +334,50 @@ def enable_plugin(plugin_name: str) -> bool:
     print(f"Plugin {plugin_name} enabled successfully in .zshrc.")
     return True
 
+def install_plugin() -> bool:
+    repository_url = input("Enter the plugin repository URL:").strip()
+
+    plugin_name = get_plugin_name(repository_url)
+
+    if plugin_name is None:
+        print("Invalid repository URL. Please provide a valid GitHub or GitLab repository URL.")
+        return False 
+
+    print(f"Detected plugin name: {plugin_name}")
+
+    if not clone_plugin(repository_url, plugin_name):
+        print(f"Failed to install plugin {plugin_name}.")
+        return False
+
+    if not enable_plugin(plugin_name):
+        print(f"{plugin_name} was installed but could not be enabled in .zshrc.")
+        return False
+
+    print(f"Plugin {plugin_name} installed and enabled successfully.")
+    return True
+
 def manage_plugins() -> bool:
-    CUSTOM_PLUGIN_PATH.mkdir(parents=True, exist_ok=True)
-
-    while ask_yes_no("Would you like to install a plugin?"):
-        repository_url = input("Enter the plugin repository URL:").strip()
-
-        plugin_name = get_plugin_name(repository_url)
-
-        if plugin_name is None:
-            print("Invalid repository URL. Please provide a valid GitHub or GitLab repository URL.")
-            continue
-
-        print(f"Detected plugin name: {plugin_name}")
-
-        if not clone_plugin(repository_url, plugin_name):
-            print(f"Failed to install plugin {plugin_name}.")
-            continue
-
-        if not enable_plugin(plugin_name):
-            print(f"{plugin_name} was installed but could not be enabled in .zshrc.")
-            continue
-
-        print(f"Plugin {plugin_name} installed and enabled successfully.")
+    if not ask_yes_no("Do you want to install a plugin?"):
+        print("Plugin installation skipped.")
         return True
+
+    if not ensure_dependencies({"git": "git"}):
+        return False 
+
+    try:
+        CUSTOM_PLUGIN_PATH.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        print(f"Failed to create plugin directory {CUSTOM_PLUGIN_PATH}: {error}")
+        return False
+
+    while True:
+        install_plugin()
+
+        if not ask_yes_no("Do you want to install another plugin?"):
+            break
+
+    print("Done isntalling plugins")
+    return True
 
 if __name__ == "__main__":
     try:
