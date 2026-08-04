@@ -101,11 +101,8 @@ def ensure_zsh() -> bool:
             print("Zsh installation failed.")
             return False
         print(f"Zsh installed at {zsh_path}.")
-    else:
-        print(f"Zsh is already installed at {zsh_path}.")
     default_shell = get_default_shell()
     if os.path.realpath(default_shell) != os.path.realpath(zsh_path):
-        print(f"Current default shell is {default_shell}.")
         if ask_yes_no(f"Set your default shell to {zsh_path}?"):
             if run_command(["chsh", "-s", zsh_path]):
                 print("Default shell changed.")
@@ -113,8 +110,6 @@ def ensure_zsh() -> bool:
             else:
                 print("Failed to change default shell.")
                 return False
-    else:
-        print("Default shell is already Zsh.")
 
     return True
 
@@ -131,14 +126,15 @@ def main() -> int:
         print("Zsh setup failed. Please rerun the script and check for errors.")
         print("You can also manually install Zsh and set it as your default shell.")
         return 1
-    print("Zsh setup completed successfully.")
 
     if not ensure_oh_my_zsh():
         print("OMZ setup failed. Please rerun the script and check for errors.")
         print("You can also manually install OMZ.")
         return 1
-    
-    print("OMZ setup completed successfully.")
+
+    if not choose_theme(get_theme()):
+        print("Theme setup encountered an error")
+        return 1
 
     if not manage_plugins():
         print("Plugin setup encountered an error")
@@ -207,28 +203,42 @@ def ensure_oh_my_zsh() -> bool:
 
 #starting here we check for plugins, we have a funciton to clone them, then we append them to zshrc
 
-def get_plugin_name(repository_url: str) -> str | None:
-    parsed_url = urlparse(repository_url)
-    if parsed_url.scheme != "https":
-        return None
-    if parsed_url.hostname not in ("github.com", "gitlab.com"):
-        return None
-    path_parts = parsed_url.path.strip("/").split("/")
+def get_plugin_name(plugin_ref: str) -> str | None:
+    plugin_ref = plugin_ref.strip()
 
-    if len(path_parts) != 2:
+    if not plugin_ref:
         return None
-    plugin_name = path_parts[1].removesuffix(".git")
 
-    if not plugin_name:
-        return None
-    return plugin_name
+    parsed_url = urlparse(plugin_ref)
+    if parsed_url.scheme in {"http", "https"} and parsed_url.hostname in {"github.com", "gitlab.com"}:
+        path_parts = parsed_url.path.strip("/").split("/")
+
+        if len(path_parts) != 2:
+            return None
+
+        plugin_name = path_parts[1].removesuffix(".git")
+        if not plugin_name:
+            return None
+        return plugin_name
+
+    if re.fullmatch(r"[A-Za-z0-9._-]+", plugin_ref):
+        return plugin_ref
+
+    return None
+
+def plugin_available(plugin_name: str) -> bool:
+    custom_plugin_path = CUSTOM_PLUGIN_PATH / plugin_name
+    built_in_plugin_path = OMZ_PATH / "plugins" / plugin_name
+    return custom_plugin_path.is_dir() or built_in_plugin_path.is_dir()
+
 
 def clone_plugin(repository_url: str, plugin_name: str) -> bool:
     plugin_path = CUSTOM_PLUGIN_PATH / plugin_name
 
-    if plugin_path.exists():
-        print(f"Plugin {plugin_name} already exists at {plugin_path}.")
+    if plugin_available(plugin_name):
+        print(f"Plugin {plugin_name} is already available.")
         return True
+
     print(f"Installing {plugin_name} plugin from {repository_url}")
 
     if not run_command(["git", "clone", "--depth=1", repository_url, str(plugin_path)]):
@@ -281,6 +291,60 @@ def backup_zshrc() -> bool:
     except OSError as error:
         print(f"Failed to create backup of .zshrc: {error}")
         return False
+
+# added a spot here for letting the user choose their own theme, runs each time the script is run
+def get_theme() -> str | None:
+    zshrc_text = ZSHRC_PATH.read_text()
+
+    match = re.search(r"^[ \t]*ZSH_THEME=\"([^\"]+)\"", zshrc_text, re.MULTILINE)
+    if match is None:
+        return None
+    return match.group(1)
+
+def set_theme(theme_name: str) -> bool:
+    if not ZSHRC_PATH.is_file():
+        print(f"{ZSHRC_PATH} does not exist.")
+        return False
+
+    try:
+        zshrc_text = ZSHRC_PATH.read_text()
+    except OSError as error:
+        print(f"Failed to read .zshrc: {error}")
+        return False
+
+    theme_pattern = re.compile(r"^[ \t]*ZSH_THEME=\"([^\"]+)\"", re.MULTILINE)
+    match = theme_pattern.search(zshrc_text)
+    if match is None:
+        print("Could not find ZSH_THEME in .zshrc.")
+        return False
+    if not backup_zshrc():
+        return False
+
+    updated_text = theme_pattern.sub(f'ZSH_THEME="{theme_name}"', zshrc_text)
+
+    try:
+        ZSHRC_PATH.write_text(updated_text)
+    except OSError as error:
+        print(f"Failed to write updated .zshrc: {error}")
+        return False
+
+    print(f"Theme set to {theme_name} in .zshrc.")
+    return True
+    
+
+def choose_theme(current_theme: str | None) -> bool:
+    if not ask_yes_no("Do you want to change the theme?"):
+        print("Theme change skipped.")
+        return True
+
+    if current_theme:
+        print(f"Current theme: {current_theme}")
+
+    theme_name = input("What is the name of theme you'd like to use: ").strip()
+    if not theme_name:
+        print("No theme name provided. Theme change skipped.")
+        return True
+    return set_theme(theme_name)
 
 def enable_plugin(plugin_name: str) -> bool:
     enabled_plugins = get_enabled_plugins()
@@ -335,17 +399,27 @@ def enable_plugin(plugin_name: str) -> bool:
     return True
 
 def install_plugin() -> bool:
-    repository_url = input("Enter the plugin repository URL:").strip()
+    plugin_ref = input("Enter the local OMZ plugin name or repository URL:").strip()
 
-    plugin_name = get_plugin_name(repository_url)
+    plugin_name = get_plugin_name(plugin_ref)
 
     if plugin_name is None:
-        print("Invalid repository URL. Please provide a valid GitHub or GitLab repository URL.")
-        return False 
+        print("Invalid plugin name. Please provide a local OMZ plugin name or a valid GitHub or GitLab repository URL.")
+        return False
 
-    print(f"Detected plugin name: {plugin_name}")
+    if plugin_available(plugin_name):
+        print(f"Plugin {plugin_name} is already available.")
+        if not enable_plugin(plugin_name):
+            print(f"{plugin_name} was found but could not be enabled in .zshrc.")
+            return False
+        print(f"Plugin {plugin_name} enabled successfully.")
+        return True
 
-    if not clone_plugin(repository_url, plugin_name):
+    if not plugin_ref.startswith(("http://", "https://")):
+        print(f"Plugin {plugin_name} is not available locally and no repository URL was provided.")
+        return False
+
+    if not clone_plugin(plugin_ref, plugin_name):
         print(f"Failed to install plugin {plugin_name}.")
         return False
 
