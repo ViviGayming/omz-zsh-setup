@@ -3,6 +3,7 @@ import os
 import pwd
 import shutil
 import subprocess
+import platform
 from pathlib import Path
 from urllib.parse import urlparse
 import re
@@ -62,10 +63,10 @@ def ensure_dependencies(dependencies: dict[str, str]) -> bool:
         print("Dependency installation skipped.")
         return False
 
-    if not run_command (["sudo", "apt-get", "update"]):
+    if not run_command (["sudo", os.environ["pkg"], "update"]):
         return False
 
-    if not run_command(["sudo", "apt-get", "install", "-y", *missing_packages]):
+    if not run_command(["sudo", os.environ["pkg"], "install", "-y", *missing_packages]):
         return False
 
     still_missing = {
@@ -84,6 +85,7 @@ def ensure_dependencies(dependencies: dict[str, str]) -> bool:
 
 def ensure_zsh() -> bool:
     zsh_path = shutil.which("zsh")
+        
 
     if zsh_path is None:
         print("Zsh is not installed.")
@@ -91,9 +93,9 @@ def ensure_zsh() -> bool:
         if not ask_yes_no("Do you want to install Zsh?"):
             print("Zsh installation skipped.")
             return False
-        if not run_command(["sudo", "apt-get", "update"]):
+        if not run_command(["sudo", os.environ["pkg"], "update"]):
             return False
-        if not run_command(["sudo", "apt-get", "install", "-y", "zsh"]):
+        if not run_command(["sudo", os.environ["pkg"], "install", "-y", "zsh"]):
             return False
         zsh_path = shutil.which("zsh")
 
@@ -113,6 +115,25 @@ def ensure_zsh() -> bool:
 
     return True
 
+
+def check_pkg() -> bool:
+    # Map of package manager binaries to their human-readable names
+    package_managers = {
+        'apt-get': 'APT (Debian, Ubuntu, Mint)',
+        'dnf': 'DNF (Fedora, RHEL, CentOS)'
+    }
+    
+    # Check the system PATH for each binary
+    for binary, name in package_managers.items():
+        if shutil.which(binary) is not None:
+            os.environ["pkg"] = binary
+            print("Found the manager", name)
+            return True
+        
+    
+    return False
+    
+
 # starting here we make sure the script is not run as root, then we call the main function to make sure zsh is installed and set as default
 
 def main() -> int:
@@ -121,6 +142,10 @@ def main() -> int:
         return 1
     print("Starting terminal setup")
     print("----------------------------")
+
+    if not check_pkg():
+        print("Sorry, this is only configured for apt and dnf.")
+        return 1
 
     if not ensure_zsh():
         print("Zsh setup failed. Please rerun the script and check for errors.")
